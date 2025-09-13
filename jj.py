@@ -3901,20 +3901,18 @@ if os.path.exists(SESSIONS_FILE):
             print("⚠️ تحذير: ملف sessions.json فارغ أو تالف. سيتم إنشاء ملف جديد.")
             sessions = {}
 
-
-
 # دالة لحفظ بيانات الجلسات في ملف JSON
 async def save_sessions():
     with open(SESSIONS_FILE, "w") as f:
         json.dump(sessions, f, indent=4)
 
-# ------------------- أوامر المساعدة والتنصيب -------------------
-
-
+# --- أمر التنصيب المعدل (لإضافة جلسات جديدة دائمًا) ---
 
 @client.on(events.NewMessage(from_users='me', pattern=r"^\.تنصيب(?: (.*))?$"))
 async def install_session(event):
-    """التعامل مع أوامر التنصيب المختلفة (دائم، تجريبي، لأيام محددة)."""
+    """
+    التعامل مع أوامر التنصيب. يضيف دائمًا جلسة جديدة ولا يقوم بالكتابة فوق القديمة.
+    """
     replied_message = await event.get_reply_message()
     
     if not (replied_message and replied_message.file):
@@ -3926,14 +3924,30 @@ async def install_session(event):
         await event.edit("**⛔ خطأ: يرجى الرد على ملف جلسة بامتداد .session أو .db فقط.**")
         return
 
-    # تحميل معلومات المستخدم الذي أضاف الجلسة
-    me = await client.get_me()
+    # تحميل الملف إلى المجلد الحالي
+    await event.edit("⏳ جارٍ تحميل الملف...")
+    download_path = await replied_message.download_media(file=".") # نحفظه في المجلد الرئيسي
     
-    # تحميل الملف وحفظ معلومات الجلسة
-    file_path = await replied_message.download_media()
-    session_name = os.path.basename(file_path)
-    sessions[session_name] = {
-        "file": file_path,
+    # --- هذا هو المنطق الجديد لإضافة جلسات متكررة ---
+    original_name = os.path.basename(download_path)
+    session_name_to_save = original_name
+    counter = 1
+    # إذا كان الاسم موجودًا بالفعل، أضف رقمًا له
+    while session_name_to_save in sessions:
+        name, ext = os.path.splitext(original_name)
+        session_name_to_save = f"{name}({counter}){ext}"
+        counter += 1
+    
+    # إذا تم إنشاء اسم جديد، قم بإعادة تسمية الملف الفعلي
+    if session_name_to_save != original_name:
+        new_path = os.path.join(os.path.dirname(download_path), session_name_to_save)
+        os.rename(download_path, new_path)
+        download_path = new_path
+    # ----------------------------------------------------
+
+    me = await client.get_me()
+    sessions[session_name_to_save] = {
+        "file": download_path,
         "added_by": me.id,
         "added_at": str(datetime.datetime.now()),
         "expiry": None
@@ -3942,78 +3956,53 @@ async def install_session(event):
     arg = event.pattern_match.group(1)
     
     if arg is None:
-        # .تنصيب (دائم)
-        sessions[session_name]["expiry"] = "دائم"
-        await event.edit(f"**✅ تم تنصيب الجلسة `{session_name}` بنجاح (تنصيب دائم).**")
+        sessions[session_name_to_save]["expiry"] = "دائم"
+        await event.edit(f"**✅ تم إضافة وتنصيب الجلسة `{session_name_to_save}` (تنصيب دائم).**")
     elif arg == "تجريبي":
-        # .تنصيب تجريبي
         expiry_time = datetime.datetime.now() + datetime.timedelta(hours=4)
-        sessions[session_name]["expiry"] = expiry_time.strftime("%Y-%m-%d %H:%M:%S")
-        await event.edit(f"**✅ تم تنصيب الجلسة `{session_name}` كتجربة لمدة 4 ساعات.**\n**تنتهي في:** `{sessions[session_name]['expiry']}`")
+        sessions[session_name_to_save]["expiry"] = expiry_time.strftime("%Y-%m-%d %H:%M:%S")
+        await event.edit(f"**✅ تم إضافة وتنصيب الجلسة `{session_name_to_save}` كتجربة لمدة 4 ساعات.**")
     elif arg.isdigit():
-        # .تنصيب + رقم
         days = int(arg)
         expiry_time = datetime.datetime.now() + datetime.timedelta(days=days)
-        sessions[session_name]["expiry"] = expiry_time.strftime("%Y-%m-%d %H:%M:%S")
-        await event.edit(f"**✅ تم تنصيب الجلسة `{session_name}` لمدة `{days}` أيام.**\n**تنتهي في:** `{sessions[session_name]['expiry']}`")
+        sessions[session_name_to_save]["expiry"] = expiry_time.strftime("%Y-%m-%d %H:%M:%S")
+        await event.edit(f"**✅ تم إضافة وتنصيب الجلسة `{session_name_to_save}` لمدة `{days}` أيام.**")
     else:
-        await event.edit("**⛔ خطأ في صيغة الأمر. استخدم أحد الخيارات التالية:**\n`.تنصيب`\n`.تنصيب تجريبي`\n`.تنصيب 5`")
-        # حذف الجلسة التي تمت إضافتها بشكل غير صحيح
-        del sessions[session_name]
-        os.remove(file_path)
+        del sessions[session_name_to_save]
+        os.remove(download_path)
+        await event.edit("**⛔ خطأ في صيغة الأمر. استخدم:\n`.تنصيب`\n`.تنصيب تجريبي`\n`.تنصيب 5`")
         return
 
     await save_sessions()
 
-# ------------------- أوامر إدارة الجلسات -------------------
+
 
 @client.on(events.NewMessage(from_users='me', pattern=r"^\.جلساتي$"))
 async def list_sessions(event):
-    """عرض قائمة بجميع الجلسات النشطة وتفاصيلها."""
     if not sessions:
         await event.edit("**⛔ لا توجد أي جلسات مضافة حاليًا.**")
         return
-        
     msg = "**📂 قائمة الجلسات النشطة:**\n\n"
     for i, (sname, info) in enumerate(sessions.items(), 1):
-        expiry_info = info['expiry']
-        if expiry_info != "دائم":
-            try:
-                # التحقق مما إذا كانت الجلسة قد انتهت صلاحيتها
-                expiry_dt = datetime.datetime.strptime(expiry_info, "%Y-%m-%d %H:%M:%S")
-                if datetime.datetime.now() > expiry_dt:
-                    expiry_info = "منتهية الصلاحية"
-            except (ValueError, TypeError):
-                expiry_info = "غير محدد" # في حال كان التنسيق غير صحيح
-        
-        msg += f"**{i}.** `{sname}`\n   - **الانتهاء:** {expiry_info}\n"
-    
+        msg += f"**{i}.** `{sname}`\n   - **الانتهاء:** {info['expiry']}\n"
     await event.edit(msg)
 
 @client.on(events.NewMessage(from_users='me', pattern=r"^\.انهاء (\d+)$"))
 async def end_session(event):
-    """إنهاء وحذف جلسة محددة برقمها من القائمة."""
     try:
         idx = int(event.pattern_match.group(1)) - 1
         session_list = list(sessions.keys())
-        
         if 0 <= idx < len(session_list):
             session_name = session_list[idx]
-            
-            # حذف ملف الجلسة إذا كان موجودًا
             if os.path.exists(sessions[session_name]["file"]):
                 os.remove(sessions[session_name]["file"])
-                
-            # إزالة الجلسة من القاموس
             del sessions[session_name]
             await save_sessions()
-            await event.edit(f"**✅ تم إنهاء وحذف الجلسة بنجاح:** `{session_name}`")
+            await event.edit(f"**✅ تم إنهاء الجلسة بنجاح:** `{session_name}`")
         else:
-            await event.edit("**⛔ رقم الجلسة غير صحيح. استخدم `.جلساتي` لعرض الأرقام الصحيحة.**")
+            await event.edit("**⛔ رقم الجلسة غير صحيح.**")
     except Exception as e:
-        await event.edit(f"**⛔ حدث خطأ أثناء محاولة إنهاء الجلسة:**\n`{str(e)}`")
-
-
+        await event.edit(f"**⛔ حدث خطأ:**\n`{str(e)}`")
 
 
 
